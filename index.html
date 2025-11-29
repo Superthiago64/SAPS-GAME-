@@ -21,7 +21,7 @@ import {
   getDoc
 } from 'firebase/firestore';
 import { 
-  Gamepad2, User, LogOut, Trophy, Search, ArrowLeft, Rocket, X as XIcon, Zap, Brain, Move, Ghost, Scissors, Hash, Target, Cpu, Sparkles, Crosshair, Shield, Power, Grid, Box, Bomb, Droplet, Volume2, VolumeX, LayoutGrid, RotateCw, ArrowDown
+  Gamepad2, User, LogOut, Trophy, Search, ArrowLeft, Rocket, X as XIcon, Zap, Brain, Move, Ghost, Scissors, Hash, Target, Cpu, Sparkles, Crosshair, Shield, Power, Grid, Box, Bomb, Droplet, LayoutGrid, RotateCw, ArrowDown, Volume2, VolumeX
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -29,7 +29,7 @@ const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'saps-game-final-v22-order-fix';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'saps-game-v25-final-fixed';
 
 // --- GEMINI API ---
 const apiKey = ""; 
@@ -73,6 +73,7 @@ const playSound = (type) => {
   else if (type==='hit') { playTone(150, 'square', 0.1); }
   else if (type==='shoot') { playTone(800, 'sawtooth', 0.1); }
   else if (type==='click') { playTone(1200, 'sine', 0.05); }
+  else if (type==='move') { playTone(200, 'sine', 0.05); }
 };
 
 let musicInterval = null;
@@ -112,7 +113,7 @@ const neonStyles = `
   .animate-float { animation: float 3s ease-in-out infinite; }
 `;
 
-// --- COMPONENTES UI BÁSICOS ---
+// --- UI COMPONENTS ---
 const IntroScreen = ({ onComplete }) => {
   const handleStart = () => {
     playSound('win'); startMusic(); 
@@ -142,35 +143,96 @@ const GameOverScreen = ({ score, msg, onRestart, onExit, color = 'red' }) => {
     );
 };
 
-// ================= JUEGOS (DEFINIDOS PRIMERO PARA EVITAR ERRORES) =================
+// ================= JUEGOS =================
 
-const SpaceWar = ({ onGameOver }) => {
-    const cv = useRef(null); const [sc, setSc] = useState(0); const [act, setAct] = useState(false); const [lvl, setLvl] = useState(null);
-    const st = useRef({ p:{x:150,y:350}, b:[], e:[], f:0 });
-    const loop = () => {
-        if(!act || !cv.current) return;
-        const ctx = cv.current.getContext('2d'); const s = st.current; s.f++;
-        const rate = lvl === 'hard' ? 20 : (lvl === 'insane' ? 10 : 40);
-        const spd = lvl === 'hard' ? 3 : (lvl === 'insane' ? 5 : 2);
-        if(s.f%15===0) { s.b.push({x:s.p.x, y:s.p.y}); playSound('shoot'); }
-        if(s.f%rate===0) s.e.push({x:Math.random()*280, y:-20});
-        s.b.forEach(b=>b.y-=7); s.e.forEach(e=>e.y+=spd);
-        s.b=s.b.filter(b=>b.y>-10); s.e=s.e.filter(e=>e.y<420);
-        s.e.forEach((e,i)=>{
-            if(Math.abs(s.p.x-e.x)<25 && Math.abs(s.p.y-e.y)<25) { setAct(false); onGameOver(sc,'Nave Destruida'); }
-            s.b.forEach((b,j)=>{ if(Math.abs(b.x-e.x)<20 && Math.abs(b.y-e.y)<20) { s.e.splice(i,1); s.b.splice(j,1); setSc(c=>c+50); playSound('hit'); } });
-        });
-        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400);
-        ctx.strokeStyle='#0ff'; ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y-10); ctx.lineTo(s.p.x-15, s.p.y+20); ctx.lineTo(s.p.x+15, s.p.y+20); ctx.stroke();
-        ctx.fillStyle='#ff0'; s.b.forEach(b=>ctx.fillRect(b.x-2,b.y,4,10));
-        ctx.fillStyle='#f00'; s.e.forEach(e=>ctx.fillRect(e.x-10,e.y,20,20));
-        requestAnimationFrame(loop);
+const Game2048 = ({ onGameOver }) => {
+    const [b, setB] = useState(Array(16).fill(0));
+    const [score, setScore] = useState(0);
+    
+    const getEmpty = (board) => board.map((v, i) => v === 0 ? i : null).filter(v => v !== null);
+    
+    const spawn = (board) => {
+        const empty = getEmpty(board);
+        if (empty.length === 0) return board;
+        const idx = empty[Math.floor(Math.random() * empty.length)];
+        const newBoard = [...board];
+        newBoard[idx] = Math.random() > 0.9 ? 4 : 2;
+        return newBoard;
     };
-    useEffect(()=>{if(act)loop()},[act]);
-    const mv=(e)=>{if(cv.current){const r=cv.current.getBoundingClientRect(); st.current.p.x=(e.clientX||e.touches[0].clientX)-r.left;}};
-    if(!lvl) return <div className="flex flex-col gap-3 w-64 items-center"><button onClick={()=>setLvl('easy')} className="neon-btn w-full py-3 bg-green-900/30">FÁCIL</button><button onClick={()=>setLvl('hard')} className="neon-btn w-full py-3 bg-yellow-900/30">DIFÍCIL</button><button onClick={()=>setLvl('insane')} className="neon-btn w-full py-3 bg-red-900/30 border-red-500 text-red-300">INSANO</button></div>;
-    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={p:{x:150,y:350},b:[],e:[],f:0}}} className="neon-btn px-8 py-3 font-bold text-xl">DESPEGAR 🚀</button>;
-    return <canvas ref={cv} width={300} height={400} className="bg-black border-2 border-blue-500 touch-none" onMouseMove={mv} onTouchMove={mv}/>;
+
+    useEffect(() => { setB(spawn(spawn(Array(16).fill(0)))); }, []);
+
+    const move = (dir) => {
+        let workingBoard = [...b];
+        let moved = false;
+        let addedScore = 0;
+
+        const rotateLeft = (board) => {
+            const nb = Array(16).fill(0);
+            for(let r=0;r<4;r++) for(let c=0;c<4;c++) nb[r*4+c] = board[c*4+(3-r)];
+            return nb;
+        };
+
+        const slideAndMerge = (row) => {
+            let arr = row.filter(v => v);
+            for(let i=0; i<arr.length-1; i++) {
+                if(arr[i] === arr[i+1]) {
+                    arr[i] *= 2;
+                    addedScore += arr[i];
+                    arr[i+1] = 0;
+                    moved = true;
+                }
+            }
+            arr = arr.filter(v => v);
+            while(arr.length < 4) arr.push(0);
+            return arr;
+        };
+
+        let rot = 0;
+        if(dir === 'up') rot = 1;
+        if(dir === 'right') rot = 2;
+        if(dir === 'down') rot = 3;
+
+        for(let i=0; i<rot; i++) workingBoard = rotateLeft(workingBoard);
+
+        for(let r=0; r<4; r++) {
+            const row = workingBoard.slice(r*4, r*4+4);
+            const newRow = slideAndMerge(row);
+            for(let c=0; c<4; c++) {
+                if(workingBoard[r*4+c] !== newRow[c]) moved = true;
+                workingBoard[r*4+c] = newRow[c];
+            }
+        }
+
+        for(let i=0; i<(4-rot)%4; i++) workingBoard = rotateLeft(workingBoard);
+
+        if (moved) {
+            const finalBoard = spawn(workingBoard);
+            setB(finalBoard);
+            setScore(s => s + addedScore);
+            playSound('click');
+            if (getEmpty(finalBoard).length === 0) onGameOver(score + addedScore, 'Tablero Lleno');
+        }
+    };
+
+    return (
+        <div className="flex flex-col items-center">
+            <div className="text-xl font-bold text-yellow-400 mb-2">Score: {score}</div>
+            <div className="grid grid-cols-4 gap-2 bg-slate-700 p-2 rounded mb-4">
+                {b.map((v, i) => (
+                    <div key={i} className={`w-14 h-14 flex items-center justify-center font-bold text-xl rounded ${v ? `bg-orange-${Math.min(900, v * 10)} text-white` : 'bg-slate-500'}`} style={{backgroundColor: v?`hsl(${Math.log2(v)*30}, 70%, 50%)`:'#475569'}}>
+                        {v || ''}
+                    </div>
+                ))}
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+                <div/><button onClick={() => move('up')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬆️</button><div/>
+                <button onClick={() => move('left')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬅️</button>
+                <button onClick={() => move('down')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬇️</button>
+                <button onClick={() => move('right')} className="p-3 bg-slate-800 rounded active:bg-blue-600">➡️</button>
+            </div>
+        </div>
+    );
 };
 
 const TetrisGame = ({ onGameOver }) => {
@@ -178,18 +240,23 @@ const TetrisGame = ({ onGameOver }) => {
     const st = useRef({ grid: Array(20).fill().map(() => Array(10).fill(0)), p: null, dropT: 0, lastT: 0 });
     const SHAPES = [ [[1,1,1,1]], [[1,1],[1,1]], [[0,1,0],[1,1,1]], [[1,0,0],[1,1,1]], [[0,0,1],[1,1,1]], [[0,1,1],[1,1,0]], [[1,1,0],[0,1,1]] ];
     const COLORS = ['#0ff', '#ff0', '#f0f', '#f90', '#00f', '#0f0', '#f00'];
+    
     const newPiece = () => ({ shape: SHAPES[Math.floor(Math.random()*7)], c: COLORS[Math.floor(Math.random()*7)], x: 3, y: 0 });
+    
     const collide = (grid, p) => {
         for(let y=0; y<p.shape.length; y++) for(let x=0; x<p.shape[y].length; x++) {
             if(p.shape[y][x] && (p.y+y>=20 || p.x+x<0 || p.x+x>=10 || (p.y+y>=0 && grid[p.y+y][p.x+x]))) return true;
         } return false;
     };
+    
     const merge = (grid, p) => {
         const ng = grid.map(r=>[...r]);
         p.shape.forEach((row, y) => row.forEach((v, x) => { if(v && p.y+y>=0) ng[p.y+y][p.x+x] = p.c; }));
         return ng;
     };
+    
     const rotate = (p) => ({ ...p, shape: p.shape[0].map((_, i) => p.shape.map(row => row[i]).reverse()) });
+    
     const loop = (time) => {
         if(!act || !cv.current) return;
         const s = st.current;
@@ -208,11 +275,13 @@ const TetrisGame = ({ onGameOver }) => {
         const ctx = cv.current.getContext('2d');
         ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400);
         s.grid.forEach((row,y)=>row.forEach((v,x)=>{ if(v) { ctx.fillStyle=v; ctx.fillRect(x*20+50, y*20, 18, 18); } }));
-        s.p.shape.forEach((row,y)=>row.forEach((v,x)=>{ if(v) { ctx.fillStyle=s.p.c; ctx.fillRect((s.p.x+x)*20+50, (s.p.y+y)*20, 18, 18); } }));
+        if(s.p) s.p.shape.forEach((row,y)=>row.forEach((v,x)=>{ if(v) { ctx.fillStyle=s.p.c; ctx.fillRect((s.p.x+x)*20+50, (s.p.y+y)*20, 18, 18); } }));
         ctx.strokeStyle='#333'; ctx.strokeRect(50,0,200,400);
         requestAnimationFrame(loop);
     };
+    
     useEffect(()=>{if(act) requestAnimationFrame(loop)},[act, sc]);
+    
     const move = (dir) => {
         if(!act) return;
         const s = st.current;
@@ -221,32 +290,214 @@ const TetrisGame = ({ onGameOver }) => {
         if(dir==='d') { s.p.y++; if(collide(s.grid, s.p)) s.p.y--; else setSc(c=>c+1); }
         if(dir==='rot') { const rp = rotate(s.p); if(!collide(s.grid, rp)) s.p = rp; }
     };
+    
     if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={grid:Array(20).fill().map(()=>Array(10).fill(0)), p:newPiece(), lastT:0}}} className="neon-btn px-8 py-3 text-xl font-black">JUGAR TETRIS</button>;
-    return <div className="flex flex-col items-center"><div className="text-yellow-400 font-bold mb-2">SCORE: {sc}</div><canvas ref={cv} width={300} height={400} className="bg-black mb-4"/><div className="flex gap-4"><button onClick={()=>move('l')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft/></button><button onClick={()=>move('rot')} className="p-4 bg-purple-800 rounded-full active:bg-purple-600"><RotateCw/></button><button onClick={()=>move('d')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowDown/></button><button onClick={()=>move('r')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft className="rotate-180"/></button></div></div>;
+    
+    return (
+        <div className="flex flex-col items-center">
+            <div className="text-yellow-400 font-bold mb-2">SCORE: {sc}</div>
+            <canvas ref={cv} width={300} height={400} className="bg-black mb-4"/>
+            <div className="flex gap-4">
+                <button onClick={()=>move('l')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft/></button>
+                <button onClick={()=>move('rot')} className="p-4 bg-purple-800 rounded-full active:bg-purple-600"><RotateCw/></button>
+                <button onClick={()=>move('d')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowDown/></button>
+                <button onClick={()=>move('r')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft className="rotate-180"/></button>
+            </div>
+        </div>
+    );
 };
 
-const Game2048 = ({ onGameOver }) => {
-    const [b, setB] = useState(Array(16).fill(0));
-    const [score, setScore] = useState(0);
-    const getEmpty = (board) => board.map((v, i) => v === 0 ? i : null).filter(v => v !== null);
-    const spawn = (board) => {
-        const empty = getEmpty(board); if (empty.length === 0) return board;
-        const idx = empty[Math.floor(Math.random() * empty.length)]; const newBoard = [...board]; newBoard[idx] = Math.random() > 0.9 ? 4 : 2; return newBoard;
+const SpaceWar = ({ onGameOver }) => {
+    const cv = useRef(null); const [sc, setSc] = useState(0); const [act, setAct] = useState(false); const [lvl, setLvl] = useState(null);
+    const st = useRef({ p:{x:150,y:350}, b:[], e:[], f:0 });
+    
+    const loop = () => {
+        if(!act || !cv.current) return;
+        const ctx = cv.current.getContext('2d'); const s = st.current; s.f++;
+        const rate = lvl === 'hard' ? 20 : (lvl === 'insane' ? 10 : 40);
+        const spd = lvl === 'hard' ? 3 : (lvl === 'insane' ? 5 : 2);
+        
+        if(s.f%15===0) { s.b.push({x:s.p.x, y:s.p.y}); playSound('shoot'); }
+        if(s.f%rate===0) s.e.push({x:Math.random()*280, y:-20});
+        
+        s.b.forEach(b=>b.y-=7); s.e.forEach(e=>e.y+=spd);
+        s.b=s.b.filter(b=>b.y>-10); s.e=s.e.filter(e=>e.y<420);
+        
+        // Collisions
+        s.e.forEach((e,i)=>{
+            if(Math.abs(s.p.x-e.x)<25 && Math.abs(s.p.y-e.y)<25) { setAct(false); onGameOver(sc,'Nave Destruida'); }
+            s.b.forEach((b,j)=>{ if(Math.abs(b.x-e.x)<20 && Math.abs(b.y-e.y)<20) { s.e.splice(i,1); s.b.splice(j,1); setSc(c=>c+50); playSound('hit'); } }); 
+        });
+
+        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400);
+        ctx.fillStyle='#fff'; if(Math.random()>.9) ctx.fillRect(Math.random()*300,Math.random()*400,2,2);
+        ctx.strokeStyle='#0ff'; ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y-10); ctx.lineTo(s.p.x-15, s.p.y+20); ctx.lineTo(s.p.x+15, s.p.y+20); ctx.stroke();
+        ctx.fillStyle='#ff0'; s.b.forEach(b=>ctx.fillRect(b.x-2,b.y,4,10));
+        ctx.fillStyle='#f00'; s.e.forEach(e=>ctx.fillRect(e.x-10,e.y,20,20));
+        requestAnimationFrame(loop);
     };
-    useEffect(() => { setB(spawn(spawn(Array(16).fill(0)))); }, []);
-    const move = (dir) => {
-        let newBoard = [...b]; let moved = false; let addedScore = 0;
-        const slide = (row) => { let arr = row.filter(v => v); let missing = 4 - arr.length; let zeros = Array(missing).fill(0); return arr.concat(zeros); };
-        const combine = (row) => { for (let i = 0; i < 3; i++) { if (row[i] !== 0 && row[i] === row[i + 1]) { row[i] *= 2; row[i + 1] = 0; addedScore += row[i]; moved = true; } } return row; };
-        const operate = (row) => slide(combine(slide(row)));
-        const rotateLeft = (board) => { const nb = Array(16).fill(0); for(let r=0;r<4;r++) for(let c=0;c<4;c++) nb[r*4+c] = board[c*4+(3-r)]; return nb; }
-        let workingBoard = [...b];
-        if(dir === 'up') workingBoard = rotateLeft(workingBoard); if(dir === 'right') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'down') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); }
-        for(let r=0; r<4; r++) { const row = workingBoard.slice(r*4, r*4+4); const newRow = operate(row); for(let c=0; c<4; c++) { if(workingBoard[r*4+c] !== newRow[c]) moved = true; workingBoard[r*4+c] = newRow[c]; } }
-        if(dir === 'up') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'right') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'down') workingBoard = rotateLeft(workingBoard);
-        if (moved) { const finalBoard = spawn(workingBoard); setB(finalBoard); setScore(s => s + addedScore); playSound('click'); if (getEmpty(finalBoard).length === 0) onGameOver(score + addedScore, 'Tablero Lleno'); }
+    useEffect(()=>{if(act)loop()},[act]);
+    const mv=(e)=>{if(cv.current){const r=cv.current.getBoundingClientRect(); st.current.p.x=(e.clientX||e.touches[0].clientX)-r.left;}};
+    
+    if(!lvl) return <div className="flex flex-col gap-3 w-64 items-center"><button onClick={()=>setLvl('easy')} className="neon-btn w-full py-3 bg-green-900/30">FÁCIL</button><button onClick={()=>setLvl('hard')} className="neon-btn w-full py-3 bg-yellow-900/30">DIFÍCIL</button><button onClick={()=>setLvl('insane')} className="neon-btn w-full py-3 bg-red-900/30 border-red-500 text-red-300">INSANO</button></div>;
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={p:{x:150,y:350},b:[],e:[],f:0}}} className="neon-btn px-8 py-3 font-bold text-xl">DESPEGAR 🚀</button>;
+    return <canvas ref={cv} width={300} height={400} className="bg-black border-2 border-blue-500 touch-none" onMouseMove={mv} onTouchMove={mv}/>;
+};
+
+const ChessGame = ({ onGameOver }) => {
+    const initB = [
+        ['♜','♞','♝','♛','♚','♝','♞','♜'],
+        ['♟','♟','♟','♟','♟','♟','♟','♟'],
+        Array(8).fill(null), Array(8).fill(null), Array(8).fill(null), Array(8).fill(null),
+        ['♙','♙','♙','♙','♙','♙','♙','♙'],
+        ['♖','♘','♗','♕','♔','♗','♘','♖']
+    ];
+    const [b, setB] = useState(initB);
+    const [sel, setSel] = useState(null);
+    const [turn, setTurn] = useState('white');
+    const [mode, setMode] = useState(null);
+    const [validMoves, setValidMoves] = useState([]);
+
+    const isWhite = (p) => '♙♖♘♗♕♔'.includes(p);
+    const isEmpty = (r,c) => b[r] && b[r][c] === null;
+    const isEnemy = (r,c, myColor) => b[r] && b[r][c] && ((myColor==='white' && !isWhite(b[r][c])) || (myColor==='black' && isWhite(b[r][c])));
+
+    const getMoves = (r, c, board) => {
+        const p = board[r][c];
+        const moves = [];
+        const color = isWhite(p) ? 'white' : 'black';
+        const add = (nr, nc) => {
+            if (nr>=0 && nr<8 && nc>=0 && nc<8) {
+                if (isEmpty(nr,nc)) { moves.push({r:nr, c:nc}); return true; } 
+                else if (isEnemy(nr,nc,color)) { moves.push({r:nr, c:nc}); return false; } 
+            }
+            return false;
+        };
+
+        if (p==='♟' || p==='♙') { 
+            const dir = color==='white' ? -1 : 1;
+            if(isEmpty(r+dir, c)) { 
+                moves.push({r:r+dir, c}); 
+                if(((color==='white'&&r===6)||(color==='black'&&r===1)) && isEmpty(r+dir*2, c)) moves.push({r:r+dir*2, c});
+            }
+            if(isEnemy(r+dir, c-1, color)) moves.push({r:r+dir, c:c-1});
+            if(isEnemy(r+dir, c+1, color)) moves.push({r:r+dir, c:c+1});
+        }
+        if ('♜♖♛♕'.includes(p)) { 
+            [[0,1],[0,-1],[1,0],[-1,0]].forEach(([dr,dc]) => { for(let i=1; i<8; i++) if(!add(r+dr*i, c+dc*i)) break; });
+        }
+        if ('♝♗♛♕'.includes(p)) { 
+            [[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc]) => { for(let i=1; i<8; i++) if(!add(r+dr*i, c+dc*i)) break; });
+        }
+        if ('♞♘'.includes(p)) { 
+            [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]].forEach(([dr,dc]) => add(r+dr, c+dc));
+        }
+        if ('♚♔'.includes(p)) { 
+            [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dr,dc]) => add(r+dr, c+dc));
+        }
+        return moves;
     };
-    return <div className="flex flex-col items-center"><div className="text-xl font-bold text-yellow-400 mb-2">Score: {score}</div><div className="grid grid-cols-4 gap-2 bg-slate-700 p-2 rounded mb-4">{b.map((v, i) => (<div key={i} className={`w-14 h-14 flex items-center justify-center font-bold text-xl rounded ${v ? `bg-orange-${Math.min(900, v * 10)} text-white` : 'bg-slate-500'}`} style={{backgroundColor: v?`hsl(${Math.log2(v)*30}, 70%, 50%)`:'#475569'}}>{v || ''}</div>))}</div><div className="grid grid-cols-3 gap-2"><div/><button onClick={() => move('up')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬆️</button><div/><button onClick={() => move('left')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬅️</button><button onClick={() => move('down')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬇️</button><button onClick={() => move('right')} className="p-3 bg-slate-800 rounded active:bg-blue-600">➡️</button></div></div>;
+
+    const makeMove = (fromR, fromC, toR, toC) => {
+        const nb = b.map(row=>[...row]);
+        const target = nb[toR][toC];
+        nb[toR][toC] = nb[fromR][fromC];
+        nb[fromR][fromC] = null;
+        setB(nb);
+        setSel(null);
+        setValidMoves([]);
+        setTurn(turn === 'white' ? 'black' : 'white');
+        playSound(target ? 'eat' : 'move');
+        
+        if (target === '♔') onGameOver(100, 'NEGRAS GANAN');
+        if (target === '♚') onGameOver(100, 'BLANCAS GANAN');
+    };
+
+    const handleClick = (r, c) => {
+        if (mode !== 'local' && turn === 'black') return; 
+
+        if (sel && validMoves.find(m => m.r === r && m.c === c)) {
+            makeMove(sel.r, sel.c, r, c);
+        } else if (b[r][c] && ((turn === 'white' && isWhite(b[r][c])) || (turn === 'black' && !isWhite(b[r][c])))) {
+            setSel({r, c});
+            setValidMoves(getMoves(r, c, b));
+        } else {
+            setSel(null);
+            setValidMoves([]);
+        }
+    };
+
+    useEffect(() => {
+        if (mode !== 'local' && turn === 'black') {
+            const timer = setTimeout(() => {
+                const pieces = [];
+                for(let r=0; r<8; r++) for(let c=0; c<8; c++) if(b[r][c] && !isWhite(b[r][c])) pieces.push({r,c});
+                
+                let bestMove = null;
+                let bestVal = -999;
+
+                for (let p of pieces) {
+                    const moves = getMoves(p.r, p.c, b);
+                    for (let m of moves) {
+                        let val = 0;
+                        const target = b[m.r][m.c];
+                        if (mode === 'hard' && target) {
+                            if ('♕'.includes(target)) val = 90;
+                            else if ('♖'.includes(target)) val = 50;
+                            else if ('♗♘'.includes(target)) val = 30;
+                            else val = 10;
+                        }
+                        if (mode === 'easy') val = Math.random() * 10; 
+                        
+                        if (val > bestVal) { bestVal = val; bestMove = {from:p, to:m}; }
+                    }
+                }
+
+                if (bestMove) makeMove(bestMove.from.r, bestMove.from.c, bestMove.to.r, bestMove.to.c);
+                else { onGameOver(50, 'Juego Terminado'); }
+
+            }, 800);
+            return () => clearTimeout(timer);
+        }
+    }, [turn, mode, b]);
+
+    if (!mode) return (
+        <div className="flex flex-col gap-3 w-64 items-center animate-fade-in">
+            <h3 className="text-xl font-bold mb-2 text-white">MODO AJEDREZ</h3>
+            <button onClick={()=>setMode('easy')} className="neon-btn w-full py-3 bg-green-900/30 font-bold">VS CPU (FÁCIL)</button>
+            <button onClick={()=>setMode('hard')} className="neon-btn w-full py-3 bg-red-900/30 border-red-500 text-red-300 font-bold">VS CPU (DIFÍCIL)</button>
+            <button onClick={()=>setMode('local')} className="neon-btn w-full py-3 bg-blue-900/30 border-blue-500 text-blue-300 font-bold">2 JUGADORES</button>
+        </div>
+    );
+
+    return (
+        <div className="flex flex-col items-center">
+            <div className="mb-4 font-bold uppercase text-slate-400 bg-slate-800 px-4 py-1 rounded-full">
+                Turno: <span className={turn==='white'?'text-white':'text-slate-500'}>{turn === 'white' ? 'Blancas' : 'Negras'}</span>
+            </div>
+            <div className="grid grid-cols-8 border-4 border-slate-700 shadow-2xl">
+                {b.map((row, r) => row.map((piece, c) => {
+                    const isDark = (r + c) % 2 === 1;
+                    const isValid = validMoves.find(m => m.r === r && m.c === c);
+                    const isSelected = sel?.r === r && sel?.c === c;
+                    return (
+                        <div 
+                            key={`${r}-${c}`} 
+                            onClick={() => handleClick(r, c)}
+                            className={`w-9 h-9 md:w-11 md:h-11 flex items-center justify-center text-3xl md:text-4xl cursor-pointer select-none transition-colors duration-100
+                                ${isDark ? 'bg-slate-600' : 'bg-slate-400'} 
+                                ${isSelected ? '!bg-yellow-500' : ''}
+                                ${isValid ? '!bg-green-500/60 ring-inset ring-4 ring-green-300' : ''}
+                                ${piece && isWhite(piece) ? 'text-white drop-shadow-[0_2px_2px_rgba(0,0,0,0.8)]' : 'text-black drop-shadow-[0_1px_1px_rgba(255,255,255,0.5)]'}
+                            `}
+                        >
+                            {piece}
+                        </div>
+                    );
+                }))}
+            </div>
+        </div>
+    );
 };
 
 const TicTacToe = ({ onGameOver }) => {
@@ -354,23 +605,10 @@ const Minesweeper = ({ onGameOver }) => {
         if(!act || g[i].r) return;
         const ng = [...g]; ng[i].r = true; setG(ng); playSound('click');
         if(ng[i].m) { setAct(false); onGameOver(0, 'BOOM!'); playSound('lose'); }
+        else if(ng.filter(c=>!c.m && !c.r).length === 0) { setAct(false); onGameOver(100, '¡Campo Despejado!'); playSound('win'); }
     };
     if(!act) return <button onClick={init} className="neon-btn px-6 py-3">INICIAR MISIÓN</button>;
     return <div className="grid grid-cols-6 gap-1 bg-slate-800 p-2">{g.map((c,i)=><button key={i} onClick={()=>clk(i)} className={`w-12 h-12 font-bold ${c.r ? (c.m?'bg-red-600':'bg-slate-600') : 'bg-slate-400 hover:bg-slate-300'}`}>{c.r && c.m ? '💣' : ''}</button>)}</div>;
-};
-
-const ChessGame = ({ onGameOver }) => {
-    const [b, setB] = useState([['♜','♞','♝','♛','♚','♝','♞','♜'],['♟','♟','♟','♟','♟','♟','♟','♟'],...Array(4).fill(Array(8).fill(null)),['♙','♙','♙','♙','♙','♙','♙','♙'],['♖','♘','♗','♕','♔','♗','♘','♖']]);
-    const [sel, setSel] = useState(null); const [turn, setTurn] = useState('white');
-    const clk = (r,c) => {
-        if(!sel && b[r][c]) setSel({r,c});
-        else if(sel) {
-            const nb = b.map(row=>[...row]); nb[r][c]=nb[sel.r][sel.c]; nb[sel.r][sel.c]=null;
-            setB(nb); setSel(null); setTurn(turn==='white'?'black':'white'); playSound('click');
-            if(nb[r][c]==='♚' || nb[r][c]==='♔') onGameOver(100, 'Jaque Mate');
-        }
-    };
-    return <div className="flex flex-col items-center"><div className="mb-2 font-bold text-slate-400">Turno: {turn}</div><div className="grid grid-cols-8 border-4 border-slate-600">{b.map((row,r)=>row.map((p,c)=><div key={`${r}-${c}`} onClick={()=>clk(r,c)} className={`w-8 h-8 md:w-10 md:h-10 flex items-center justify-center text-2xl cursor-pointer ${(r+c)%2?'bg-slate-600':'bg-slate-400'} ${sel?.r===r&&sel?.c===c?'bg-yellow-500':''}`}>{p}</div>))}</div></div>;
 };
 
 const ClickerGame = ({ onGameOver }) => {
@@ -608,4 +846,3 @@ export default function App() {
     </div>
   );
 }
-
