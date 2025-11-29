@@ -1,0 +1,611 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  signOut,
+  signInAnonymously
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  query, 
+  onSnapshot, 
+  doc, 
+  setDoc, 
+  updateDoc, 
+  serverTimestamp,
+  getDoc
+} from 'firebase/firestore';
+import { 
+  Gamepad2, User, LogOut, Trophy, Search, ArrowLeft, Rocket, X as XIcon, Zap, Brain, Move, Ghost, Scissors, Hash, Target, Cpu, Sparkles, Crosshair, Shield, Power, Grid, Box, Bomb, Droplet, Volume2, VolumeX, LayoutGrid, RotateCw, ArrowDown
+} from 'lucide-react';
+
+// --- CONFIGURACIÓN FIREBASE ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'saps-game-final-v22-order-fix';
+
+// --- GEMINI API ---
+const apiKey = ""; 
+const callGemini = async (prompt, isJson = false) => {
+  try {
+    const payload = { contents: [{ parts: [{ text: prompt }] }] };
+    if (isJson) payload.generationConfig = { responseMimeType: "application/json" };
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "La IA está descansando.";
+  } catch (e) { return "Error IA."; }
+};
+
+// --- MOTOR DE AUDIO ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const gainNode = audioCtx.createGain();
+gainNode.connect(audioCtx.destination);
+gainNode.gain.value = 0.3; 
+
+const playTone = (freq, type, duration) => {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gn = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+  gn.gain.setValueAtTime(0.1, audioCtx.currentTime);
+  gn.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.connect(gn);
+  gn.connect(gainNode);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+};
+
+const playSound = (type) => {
+  if (type==='win') { playTone(440, 'triangle', 0.1); setTimeout(()=>playTone(554, 'triangle', 0.1), 100); setTimeout(()=>playTone(659, 'triangle', 0.4), 200); }
+  else if (type==='lose') { playTone(300, 'sawtooth', 0.2); setTimeout(()=>playTone(150, 'sawtooth', 0.4), 200); }
+  else if (type==='hit') { playTone(150, 'square', 0.1); }
+  else if (type==='shoot') { playTone(800, 'sawtooth', 0.1); }
+  else if (type==='click') { playTone(1200, 'sine', 0.05); }
+};
+
+let musicInterval = null;
+const startMusic = () => {
+  if (musicInterval) return;
+  let beat = 0;
+  const bassLine = [110, 110, 110, 130, 98, 98, 146, 130]; 
+  musicInterval = setInterval(() => {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (beat % 4 === 0) playTone(bassLine[(beat/4)%8], 'triangle', 0.3);
+    if (beat % 2 === 0) playTone(2000 + Math.random()*500, 'square', 0.05);
+    beat++;
+  }, 150); 
+};
+const stopMusic = () => { if (musicInterval) { clearInterval(musicInterval); musicInterval = null; } };
+
+const speak = (text) => {
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'es-MX'; u.rate = 1; 
+        const voices = window.speechSynthesis.getVoices();
+        const naturalVoice = voices.find(v => v.name.includes('Google') || v.name.includes('Microsoft') && v.lang.includes('es'));
+        if (naturalVoice) u.voice = naturalVoice;
+        window.speechSynthesis.speak(u);
+    }
+};
+
+const neonStyles = `
+  .neon-text { text-shadow: 0 0 5px #fff, 0 0 20px #0ff; }
+  .neon-btn { background: rgba(0,0,0,0.5); border: 2px solid #0ff; color: #fff; box-shadow: 0 0 10px #0ff; transition: 0.3s; }
+  .neon-btn:hover { background: #0ff; color: #000; box-shadow: 0 0 30px #0ff; transform: scale(1.05); }
+  .gemini-btn { background: linear-gradient(135deg, #6366f1, #a855f7); border: none; color: white; box-shadow: 0 0 15px #a855f7; }
+  .gemini-btn:hover { transform: scale(1.05); box-shadow: 0 0 25px #a855f7; }
+  .game-over-overlay { position: absolute; inset:0; background: rgba(0,0,0,0.9); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:50; }
+  @keyframes float { 0%{transform:translateY(0)} 50%{transform:translateY(-10px)} 100%{transform:translateY(0)} }
+  .animate-float { animation: float 3s ease-in-out infinite; }
+`;
+
+// --- COMPONENTES UI BÁSICOS ---
+const IntroScreen = ({ onComplete }) => {
+  const handleStart = () => {
+    playSound('win'); startMusic(); 
+    speak("Bienvenido a la aventura de hoy. Inicia sesión para comenzar.");
+    setTimeout(onComplete, 3000);
+  };
+  return (
+    <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center cursor-pointer" onClick={handleStart}>
+      <div className="mb-8 animate-float"><Rocket size={100} className="text-blue-500 drop-shadow-[0_0_20px_#3b82f6]"/></div>
+      <div className="p-6 rounded-full border-4 border-slate-800 bg-slate-900 animate-pulse hover:border-blue-500 transition"><Power size={48} className="text-white"/></div>
+      <p className="mt-4 text-slate-400 font-mono text-sm tracking-widest uppercase">Toca para Encender el Sistema</p>
+    </div>
+  );
+};
+
+const GameOverScreen = ({ score, msg, onRestart, onExit, color = 'red' }) => {
+    useEffect(() => { if(score>0) playSound('win'); else playSound('lose'); }, []);
+    return (
+      <div className={`game-over-overlay border-4 ${color==='green'?'border-green-500':'border-red-600'} rounded-xl m-4`}>
+        <h2 className={`text-5xl font-black mb-2 ${color==='green'?'text-green-500':'text-red-500'} neon-text`}>{msg}</h2>
+        {score !== null && <div className="text-4xl font-bold text-yellow-400 mb-8">Puntos: {score}</div>}
+        <div className="flex gap-4">
+          <button onClick={onRestart} className="px-6 py-3 bg-blue-600 text-white font-bold rounded hover:scale-105 transition">REINTENTAR</button>
+          <button onClick={onExit} className="px-6 py-3 bg-slate-700 text-white font-bold rounded hover:scale-105 transition">SALIR</button>
+        </div>
+      </div>
+    );
+};
+
+// ================= JUEGOS (DEFINIDOS PRIMERO PARA EVITAR ERRORES) =================
+
+const SpaceWar = ({ onGameOver }) => {
+    const cv = useRef(null); const [sc, setSc] = useState(0); const [act, setAct] = useState(false); const [lvl, setLvl] = useState(null);
+    const st = useRef({ p:{x:150,y:350}, b:[], e:[], f:0 });
+    const loop = () => {
+        if(!act || !cv.current) return;
+        const ctx = cv.current.getContext('2d'); const s = st.current; s.f++;
+        const rate = lvl === 'hard' ? 20 : (lvl === 'insane' ? 10 : 40);
+        const spd = lvl === 'hard' ? 3 : (lvl === 'insane' ? 5 : 2);
+        if(s.f%15===0) { s.b.push({x:s.p.x, y:s.p.y}); playSound('shoot'); }
+        if(s.f%rate===0) s.e.push({x:Math.random()*280, y:-20});
+        s.b.forEach(b=>b.y-=7); s.e.forEach(e=>e.y+=spd);
+        s.b=s.b.filter(b=>b.y>-10); s.e=s.e.filter(e=>e.y<420);
+        s.e.forEach((e,i)=>{
+            if(Math.abs(s.p.x-e.x)<25 && Math.abs(s.p.y-e.y)<25) { setAct(false); onGameOver(sc,'Nave Destruida'); }
+            s.b.forEach((b,j)=>{ if(Math.abs(b.x-e.x)<20 && Math.abs(b.y-e.y)<20) { s.e.splice(i,1); s.b.splice(j,1); setSc(c=>c+50); playSound('hit'); } });
+        });
+        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400);
+        ctx.strokeStyle='#0ff'; ctx.beginPath(); ctx.moveTo(s.p.x, s.p.y-10); ctx.lineTo(s.p.x-15, s.p.y+20); ctx.lineTo(s.p.x+15, s.p.y+20); ctx.stroke();
+        ctx.fillStyle='#ff0'; s.b.forEach(b=>ctx.fillRect(b.x-2,b.y,4,10));
+        ctx.fillStyle='#f00'; s.e.forEach(e=>ctx.fillRect(e.x-10,e.y,20,20));
+        requestAnimationFrame(loop);
+    };
+    useEffect(()=>{if(act)loop()},[act]);
+    const mv=(e)=>{if(cv.current){const r=cv.current.getBoundingClientRect(); st.current.p.x=(e.clientX||e.touches[0].clientX)-r.left;}};
+    if(!lvl) return <div className="flex flex-col gap-3 w-64 items-center"><button onClick={()=>setLvl('easy')} className="neon-btn w-full py-3 bg-green-900/30">FÁCIL</button><button onClick={()=>setLvl('hard')} className="neon-btn w-full py-3 bg-yellow-900/30">DIFÍCIL</button><button onClick={()=>setLvl('insane')} className="neon-btn w-full py-3 bg-red-900/30 border-red-500 text-red-300">INSANO</button></div>;
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={p:{x:150,y:350},b:[],e:[],f:0}}} className="neon-btn px-8 py-3 font-bold text-xl">DESPEGAR 🚀</button>;
+    return <canvas ref={cv} width={300} height={400} className="bg-black border-2 border-blue-500 touch-none" onMouseMove={mv} onTouchMove={mv}/>;
+};
+
+const TetrisGame = ({ onGameOver }) => {
+    const cv = useRef(null); const [act, setAct] = useState(false); const [sc, setSc] = useState(0);
+    const st = useRef({ grid: Array(20).fill().map(() => Array(10).fill(0)), p: null, dropT: 0, lastT: 0 });
+    const SHAPES = [ [[1,1,1,1]], [[1,1],[1,1]], [[0,1,0],[1,1,1]], [[1,0,0],[1,1,1]], [[0,0,1],[1,1,1]], [[0,1,1],[1,1,0]], [[1,1,0],[0,1,1]] ];
+    const COLORS = ['#0ff', '#ff0', '#f0f', '#f90', '#00f', '#0f0', '#f00'];
+    const newPiece = () => ({ shape: SHAPES[Math.floor(Math.random()*7)], c: COLORS[Math.floor(Math.random()*7)], x: 3, y: 0 });
+    const collide = (grid, p) => {
+        for(let y=0; y<p.shape.length; y++) for(let x=0; x<p.shape[y].length; x++) {
+            if(p.shape[y][x] && (p.y+y>=20 || p.x+x<0 || p.x+x>=10 || (p.y+y>=0 && grid[p.y+y][p.x+x]))) return true;
+        } return false;
+    };
+    const merge = (grid, p) => {
+        const ng = grid.map(r=>[...r]);
+        p.shape.forEach((row, y) => row.forEach((v, x) => { if(v && p.y+y>=0) ng[p.y+y][p.x+x] = p.c; }));
+        return ng;
+    };
+    const rotate = (p) => ({ ...p, shape: p.shape[0].map((_, i) => p.shape.map(row => row[i]).reverse()) });
+    const loop = (time) => {
+        if(!act || !cv.current) return;
+        const s = st.current;
+        if(time - s.lastT > 1000) {
+            s.p.y++;
+            if(collide(s.grid, s.p)) {
+                s.p.y--; s.grid = merge(s.grid, s.p);
+                let lines = 0;
+                for(let y=19; y>=0; y--) { if(s.grid[y].every(c=>c!==0)) { s.grid.splice(y,1); s.grid.unshift(Array(10).fill(0)); lines++; y++; } }
+                if(lines>0) { setSc(c=>c+lines*100); playSound('win'); } else playSound('click');
+                s.p = newPiece();
+                if(collide(s.grid, s.p)) { setAct(false); onGameOver(sc, 'Torre Caída'); return; }
+            }
+            s.lastT = time;
+        }
+        const ctx = cv.current.getContext('2d');
+        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400);
+        s.grid.forEach((row,y)=>row.forEach((v,x)=>{ if(v) { ctx.fillStyle=v; ctx.fillRect(x*20+50, y*20, 18, 18); } }));
+        s.p.shape.forEach((row,y)=>row.forEach((v,x)=>{ if(v) { ctx.fillStyle=s.p.c; ctx.fillRect((s.p.x+x)*20+50, (s.p.y+y)*20, 18, 18); } }));
+        ctx.strokeStyle='#333'; ctx.strokeRect(50,0,200,400);
+        requestAnimationFrame(loop);
+    };
+    useEffect(()=>{if(act) requestAnimationFrame(loop)},[act, sc]);
+    const move = (dir) => {
+        if(!act) return;
+        const s = st.current;
+        if(dir==='l') { s.p.x--; if(collide(s.grid, s.p)) s.p.x++; }
+        if(dir==='r') { s.p.x++; if(collide(s.grid, s.p)) s.p.x--; }
+        if(dir==='d') { s.p.y++; if(collide(s.grid, s.p)) s.p.y--; else setSc(c=>c+1); }
+        if(dir==='rot') { const rp = rotate(s.p); if(!collide(s.grid, rp)) s.p = rp; }
+    };
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={grid:Array(20).fill().map(()=>Array(10).fill(0)), p:newPiece(), lastT:0}}} className="neon-btn px-8 py-3 text-xl font-black">JUGAR TETRIS</button>;
+    return <div className="flex flex-col items-center"><div className="text-yellow-400 font-bold mb-2">SCORE: {sc}</div><canvas ref={cv} width={300} height={400} className="bg-black mb-4"/><div className="flex gap-4"><button onClick={()=>move('l')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft/></button><button onClick={()=>move('rot')} className="p-4 bg-purple-800 rounded-full active:bg-purple-600"><RotateCw/></button><button onClick={()=>move('d')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowDown/></button><button onClick={()=>move('r')} className="p-4 bg-slate-800 rounded-full active:bg-blue-600"><ArrowLeft className="rotate-180"/></button></div></div>;
+};
+
+const Game2048 = ({ onGameOver }) => {
+    const [b, setB] = useState(Array(16).fill(0));
+    const [score, setScore] = useState(0);
+    const getEmpty = (board) => board.map((v, i) => v === 0 ? i : null).filter(v => v !== null);
+    const spawn = (board) => {
+        const empty = getEmpty(board); if (empty.length === 0) return board;
+        const idx = empty[Math.floor(Math.random() * empty.length)]; const newBoard = [...board]; newBoard[idx] = Math.random() > 0.9 ? 4 : 2; return newBoard;
+    };
+    useEffect(() => { setB(spawn(spawn(Array(16).fill(0)))); }, []);
+    const move = (dir) => {
+        let newBoard = [...b]; let moved = false; let addedScore = 0;
+        const slide = (row) => { let arr = row.filter(v => v); let missing = 4 - arr.length; let zeros = Array(missing).fill(0); return arr.concat(zeros); };
+        const combine = (row) => { for (let i = 0; i < 3; i++) { if (row[i] !== 0 && row[i] === row[i + 1]) { row[i] *= 2; row[i + 1] = 0; addedScore += row[i]; moved = true; } } return row; };
+        const operate = (row) => slide(combine(slide(row)));
+        const rotateLeft = (board) => { const nb = Array(16).fill(0); for(let r=0;r<4;r++) for(let c=0;c<4;c++) nb[r*4+c] = board[c*4+(3-r)]; return nb; }
+        let workingBoard = [...b];
+        if(dir === 'up') workingBoard = rotateLeft(workingBoard); if(dir === 'right') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'down') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); }
+        for(let r=0; r<4; r++) { const row = workingBoard.slice(r*4, r*4+4); const newRow = operate(row); for(let c=0; c<4; c++) { if(workingBoard[r*4+c] !== newRow[c]) moved = true; workingBoard[r*4+c] = newRow[c]; } }
+        if(dir === 'up') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'right') { workingBoard = rotateLeft(workingBoard); workingBoard = rotateLeft(workingBoard); } if(dir === 'down') workingBoard = rotateLeft(workingBoard);
+        if (moved) { const finalBoard = spawn(workingBoard); setB(finalBoard); setScore(s => s + addedScore); playSound('click'); if (getEmpty(finalBoard).length === 0) onGameOver(score + addedScore, 'Tablero Lleno'); }
+    };
+    return <div className="flex flex-col items-center"><div className="text-xl font-bold text-yellow-400 mb-2">Score: {score}</div><div className="grid grid-cols-4 gap-2 bg-slate-700 p-2 rounded mb-4">{b.map((v, i) => (<div key={i} className={`w-14 h-14 flex items-center justify-center font-bold text-xl rounded ${v ? `bg-orange-${Math.min(900, v * 10)} text-white` : 'bg-slate-500'}`} style={{backgroundColor: v?`hsl(${Math.log2(v)*30}, 70%, 50%)`:'#475569'}}>{v || ''}</div>))}</div><div className="grid grid-cols-3 gap-2"><div/><button onClick={() => move('up')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬆️</button><div/><button onClick={() => move('left')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬅️</button><button onClick={() => move('down')} className="p-3 bg-slate-800 rounded active:bg-blue-600">⬇️</button><button onClick={() => move('right')} className="p-3 bg-slate-800 rounded active:bg-blue-600">➡️</button></div></div>;
+};
+
+const TicTacToe = ({ onGameOver }) => {
+  const [b, setB] = useState(Array(9).fill(null)); const [xNext, setX] = useState(true); const [mode, setMode] = useState(null);
+  const win = (s) => { const l=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]; for(let [x,y,z] of l) if(s[x]&&s[x]===s[y]&&s[x]===s[z]) return s[x]; return null; };
+  const click = (i) => {
+      if(b[i] || win(b)) return;
+      if(mode !== 'local' && !xNext) return;
+      const nb=[...b]; nb[i]=(mode==='local'?(xNext?'X':'O'):'X'); setB(nb); setX(!xNext);
+      if(win(nb)) setTimeout(()=>onGameOver(mode==='hard'?50:10, '¡Ganaste!'), 500); else if(!nb.includes(null)) setTimeout(()=>onGameOver(5, 'Empate'), 500);
+  };
+  useEffect(()=>{
+      if(!xNext && !win(b) && mode!=='local' && b.includes(null)) {
+          const t = setTimeout(()=>{
+              let m=-1; const e=b.map((v,i)=>v===null?i:null).filter(v=>v!==null);
+              if(mode==='hard') { const l=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]; for(let [x,y,z] of l) { const v=[b[x],b[y],b[z]]; if(v.filter(k=>k==='O').length===2 && v.includes(null)) m=[x,y,z][v.indexOf(null)]; } if(m===-1) for(let [x,y,z] of l) { const v=[b[x],b[y],b[z]]; if(v.filter(k=>k==='X').length===2 && v.includes(null)) m=[x,y,z][v.indexOf(null)]; } }
+              if(m===-1) m=e[Math.floor(Math.random()*e.length)];
+              const nb=[...b]; nb[m]='O'; setB(nb); setX(true); if(win(nb)) setTimeout(()=>onGameOver(0, 'Perdiste'), 500);
+          }, 500); return ()=>clearTimeout(t);
+      }
+  }, [xNext, mode, b]);
+  if(!mode) return <div className="flex flex-col gap-3 w-64 items-center"><button onClick={()=>setMode('easy')} className="neon-btn w-full py-3 bg-green-900/30">FÁCIL</button><button onClick={()=>setMode('hard')} className="neon-btn w-full py-3 bg-red-900/30">IMPOSIBLE</button><button onClick={()=>setMode('local')} className="neon-btn w-full py-3 bg-blue-900/30">2 JUGADORES</button></div>;
+  return <div className="flex flex-col items-center"><div className="grid grid-cols-3 gap-2 bg-slate-800 p-2 rounded-xl">{b.map((v,i)=><button key={i} onClick={()=>click(i)} className="w-20 h-20 bg-slate-700 text-5xl font-black rounded flex items-center justify-center hover:bg-slate-600">{v==='X'&&<span className="text-cyan-400">X</span>}{v==='O'&&<span className="text-pink-500">O</span>}</button>)}</div><div className="mt-4 text-white font-bold">{mode==='local' ? (xNext?'Turno X':'Turno O') : (xNext?'Tu Turno':'Pensando...')}</div></div>;
+};
+
+const GeminiTrivia = ({ onGameOver }) => {
+    const [t, setT] = useState(''); const [d, setD] = useState(null); const [l, setL] = useState(false); const [s, setS] = useState(0);
+    const gen = async () => {
+        setL(true); const p = `Genera una pregunta de trivia difícil sobre "${t||'Cultura Pop'}" en español. Responde SOLO JSON puro: {"q":"Pregunta","o":["Op1","Op2","Op3","Op4"],"a":index_num}`;
+        const res = await callGemini(p, true);
+        try { const clean = res.replace(/```json/g, '').replace(/```/g, '').trim(); setD(JSON.parse(clean)); } catch(e){ alert('Error IA. Intenta otro tema.'); }
+        setL(false);
+    };
+    if(d) return <div className="w-full max-w-md text-center animate-fade-in"><h3 className="text-xl font-bold mb-4 bg-slate-800 p-4 rounded text-white">{d.q}</h3><div className="grid gap-2">{d.o.map((o,i)=><button key={i} onClick={()=>{if(i===d.a){setS(s+50);playSound('win');gen();}else onGameOver(s,'Incorrecto');}} className="p-4 bg-slate-700 hover:bg-purple-600 rounded text-left font-bold text-white transition">{o}</button>)}</div></div>;
+    return <div className="text-center w-full max-w-sm"><h3 className="text-2xl font-bold mb-2 text-purple-400">TRIVIA INFINITA</h3><input className="w-full p-3 bg-slate-900 border border-purple-500 rounded mb-4 text-white text-center" placeholder="Tema (ej. Espacio, Marvel...)" value={t} onChange={e=>setT(e.target.value)}/><button onClick={()=>gen()} disabled={l} className="neon-btn w-full py-3 rounded font-bold">{l?'Pensando...':'JUGAR'}</button></div>;
+};
+
+const PongGame = ({ onGameOver }) => {
+    const cv=useRef(null); const [act,setAct]=useState(false); const [mode,setMode]=useState(null); const st=useRef({bx:150,by:200,vx:3,vy:3,p1:150,p2:150,p3:150,sc:0});
+    const loop = () => {
+        if(!act||!cv.current)return; const s=st.current; const ctx=cv.current.getContext('2d');
+        s.bx+=s.vx; s.by+=s.vy; if(s.bx<=0||s.bx>=300)s.vx*=-1;
+        if(s.by>=380 && s.bx>=s.p1-30 && s.bx<=s.p1+30) { s.vy*=-1.1; s.sc++; playSound('hit'); }
+        if(mode==='2' && s.by<=20 && ((s.bx>=s.p2-25 && s.bx<=s.p2+25)||(s.bx>=s.p3-25 && s.bx<=s.p3+25))) { s.vy*=-1.1; playSound('hit'); }
+        else if(mode!=='2' && s.by<=20 && s.bx>=s.p2-30 && s.bx<=s.p2+30) { s.vy*=-1.1; playSound('hit'); }
+        if(mode!=='2') s.p2+=(s.bx-s.p2)*0.1; else { s.p2+=(s.bx-s.p2)*0.08; s.p3=s.p2+80; }
+        if(s.by>400) { setAct(false); onGameOver(s.sc,'Perdiste'); } if(s.by<0) { setAct(false); onGameOver(s.sc+50,'Ganaste'); }
+        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,400); ctx.fillStyle='#fff'; ctx.fillRect(s.bx,s.by,6,6);
+        ctx.fillStyle='#3b82f6'; ctx.fillRect(s.p1-(mode==='2'?25:30),380,(mode==='2'?50:60),10);
+        ctx.fillStyle='#ef4444'; if(mode==='2'){ctx.fillRect(s.p2-25,10,50,10);ctx.fillRect(s.p3-25,10,50,10);} else ctx.fillRect(s.p2-30,10,60,10);
+        requestAnimationFrame(loop);
+    };
+    useEffect(()=>{if(act)loop()},[act]);
+    const mv=(e)=>{if(cv.current)st.current.p1=(e.clientX||e.touches[0].clientX)-cv.current.getBoundingClientRect().left;};
+    if(!act) return <div className="flex flex-col gap-4 items-center"><button onClick={()=>{setMode('1');setAct(true);st.current={bx:150,by:200,vx:3,vy:3,p1:150,p2:150,p3:150,sc:0}}} className="neon-btn px-6 py-3 w-64">1 VS 1</button><button onClick={()=>{setMode('2');setAct(true);st.current={bx:150,by:200,vx:3,vy:3,p1:150,p2:100,p3:200,sc:0}}} className="neon-btn px-6 py-3 w-64 border-red-500 text-red-400">EXTREMO (2 RIVALES)</button></div>;
+    return <canvas ref={cv} width={300} height={400} className="bg-black border-2 border-white touch-none" onMouseMove={mv} onTouchMove={mv}/>;
+};
+
+const ZombieArena = ({ onGameOver }) => {
+  const cv = useRef(null); const [sc, setSc] = useState(0); const [act, setAct] = useState(false); const [shop, setShop] = useState(false);
+  const st = useRef({ p:{x:150,y:150}, b:[], e:[], f:0, dmg:1, fr:20, multi:1 });
+  const loop = () => {
+    if (!st.current || !cv.current || !act || shop) return;
+    const ctx = cv.current.getContext('2d'); const s = st.current; s.f++;
+    if(s.f % Math.max(20, 60 - Math.floor(sc/100)) === 0) { const edge = Math.floor(Math.random()*4); let ex, ey; if(edge===0){ex=Math.random()*300; ey=-20;} else if(edge===1){ex=320; ey=Math.random()*300;} else if(edge===2){ex=Math.random()*300; ey=320;} else {ex=-20; ey=Math.random()*300;} s.e.push({x:ex, y:ey, hp: 1 + Math.floor(sc/200)}); }
+    s.b.forEach(b => { b.x += b.vx; b.y += b.vy; }); s.b = s.b.filter(b => b.x>-50 && b.x<350 && b.y>-50 && b.y<350);
+    s.e.forEach(e => { const ang = Math.atan2(s.p.y - e.y, s.p.x - e.x); e.x += Math.cos(ang); e.y += Math.sin(ang); if(Math.hypot(s.p.x-e.x, s.p.y-e.y) < 15) { setAct(false); onGameOver(sc, '¡Te comieron!'); } });
+    s.b.forEach((b, bi) => { s.e.forEach((e, ei) => { if(b.active && e.hp>0 && Math.hypot(b.x-e.x, b.y-e.y) < 15) { b.active=false; e.hp-=s.dmg; if(e.hp<=0){ s.e.splice(ei,1); setSc(c=>c+10); playSound('hit'); } } }); });
+    s.b = s.b.filter(b => b.active);
+    ctx.fillStyle = '#111'; ctx.fillRect(0,0,300,300); ctx.fillStyle = '#3b82f6'; ctx.beginPath(); ctx.arc(s.p.x, s.p.y, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fbbf24'; s.b.forEach(b => { ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, 7); ctx.fill(); }); ctx.fillStyle = '#ef4444'; s.e.forEach(e => ctx.fillRect(e.x-8, e.y-8, 16, 16));
+    requestAnimationFrame(loop);
+  };
+  useEffect(() => { if(act) requestAnimationFrame(loop); }, [act, shop]);
+  const input = (e) => {
+    if(!act||shop)return; const r=cv.current.getBoundingClientRect(); const cx=(e.clientX||e.touches[0].clientX)-r.left; const cy=(e.clientY||e.touches[0].clientY)-r.top;
+    st.current.p.x += (cx - st.current.p.x)*0.1; st.current.p.y += (cy - st.current.p.y)*0.1;
+    if(st.current.f % st.current.fr === 0 || e.type.includes('down') || e.type.includes('start')) { const a = Math.atan2(cy-st.current.p.y, cx-st.current.p.x); const shot = (ang) => st.current.b.push({x:st.current.p.x,y:st.current.p.y,vx:Math.cos(ang)*7,vy:Math.sin(ang)*7,active:true}); shot(a); if(st.current.multi>1){shot(a-0.2);shot(a+0.2);} playSound('shoot'); }
+  };
+  if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={p:{x:150,y:150},b:[],e:[],f:0,dmg:1,fr:20,multi:1}}} className="neon-btn px-8 py-4 font-bold text-red-400">ENTRAR A LA ARENA</button>;
+  return <div className="relative"><canvas ref={cv} width={300} height={300} className="bg-black border-2 border-red-900 cursor-crosshair" onMouseDown={input} onMouseMove={input} onTouchStart={input} onTouchMove={input}/><div className="text-center font-bold text-yellow-400 mt-2">PUNTOS: {sc}</div></div>;
+};
+
+const SnakeGame = ({ onGameOver }) => {
+    const cv=useRef(null); const [sc,setSc]=useState(0); const [act,setAct]=useState(false); const st=useRef({s:[{x:10,y:10}], d:{x:1,y:0}, f:{x:5,y:5}});
+    const loop = () => {
+        if(!act)return;
+        const h={x:st.current.s[0].x+st.current.d.x, y:st.current.s[0].y+st.current.d.y};
+        if(h.x<0||h.x>=20||h.y<0||h.y>=20||st.current.s.some(p=>p.x===h.x&&p.y===h.y)) { setAct(false); onGameOver(sc,'Game Over'); return; }
+        st.current.s.unshift(h);
+        if(h.x===st.current.f.x && h.y===st.current.f.y) { setSc(c=>c+10); st.current.f={x:Math.floor(Math.random()*20), y:Math.floor(Math.random()*20)}; playSound('hit'); } else st.current.s.pop();
+        const ctx=cv.current.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,300,300); ctx.fillStyle='#0f0'; st.current.s.forEach(p=>ctx.fillRect(p.x*15+1,p.y*15+1,13,13)); ctx.fillStyle='#f00'; ctx.fillRect(st.current.f.x*15+1,st.current.f.y*15+1,13,13);
+        setTimeout(()=>requestAnimationFrame(loop), 100);
+    };
+    useEffect(()=>{if(act)loop()},[act]);
+    useEffect(()=>{ const k=(e)=>{const d=st.current.d; if(e.key==='ArrowUp'&&d.y===0)st.current.d={x:0,y:-1}; if(e.key==='ArrowDown'&&d.y===0)st.current.d={x:0,y:1}; if(e.key==='ArrowLeft'&&d.x===0)st.current.d={x:-1,y:0}; if(e.key==='ArrowRight'&&d.x===0)st.current.d={x:1,y:0};}; window.addEventListener('keydown',k); return ()=>window.removeEventListener('keydown',k); },[]);
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={s:[{x:10,y:10}],d:{x:1,y:0},f:{x:5,y:5}}}} className="neon-btn px-8 py-3 text-green-400 font-bold">INICIAR SNAKE</button>;
+    return <canvas ref={cv} width={300} height={300} className="bg-black border-2 border-green-500 touch-none" onTouchStart={()=>{}}/>;
+};
+
+const Minesweeper = ({ onGameOver }) => {
+    const [g, setG] = useState([]); const [act, setAct] = useState(false);
+    const init = () => { setG(Array(36).fill(0).map(()=>({m:Math.random()<.2, r:false}))); setAct(true); };
+    const clk = (i) => {
+        if(!act || g[i].r) return;
+        const ng = [...g]; ng[i].r = true; setG(ng); playSound('click');
+        if(ng[i].m) { setAct(false); onGameOver(0, 'BOOM!'); playSound('lose'); }
+    };
+    if(!act) return <button onClick={init} className="neon-btn px-6 py-3">INICIAR MISIÓN</button>;
+    return <div className="grid grid-cols-6 gap-1 bg-slate-800 p-2">{g.map((c,i)=><button key={i} onClick={()=>clk(i)} className={`w-12 h-12 font-bold ${c.r ? (c.m?'bg-red-600':'bg-slate-600') : 'bg-slate-400 hover:bg-slate-300'}`}>{c.r && c.m ? '💣' : ''}</button>)}</div>;
+};
+
+const ChessGame = ({ onGameOver }) => {
+    const [b, setB] = useState([['♜','♞','♝','♛','♚','♝','♞','♜'],['♟','♟','♟','♟','♟','♟','♟','♟'],...Array(4).fill(Array(8).fill(null)),['♙','♙','♙','♙','♙','♙','♙','♙'],['♖','♘','♗','♕','♔','♗','♘','♖']]);
+    const [sel, setSel] = useState(null); const [turn, setTurn] = useState('white');
+    const clk = (r,c) => {
+        if(!sel && b[r][c]) setSel({r,c});
+        else if(sel) {
+            const nb = b.map(row=>[...row]); nb[r][c]=nb[sel.r][sel.c]; nb[sel.r][sel.c]=null;
+            setB(nb); setSel(null); setTurn(turn==='white'?'black':'white'); playSound('click');
+            if(nb[r][c]==='♚' || nb[r][c]==='♔') onGameOver(100, 'Jaque Mate');
+        }
+    };
+    return <div className="flex flex-col items-center"><div className="mb-2 font-bold text-slate-400">Turno: {turn}</div><div className="grid grid-cols-8 border-4 border-slate-600">{b.map((row,r)=>row.map((p,c)=><div key={`${r}-${c}`} onClick={()=>clk(r,c)} className={`w-8 h-8 md:w-10 md:h-10 flex items-center justify-center text-2xl cursor-pointer ${(r+c)%2?'bg-slate-600':'bg-slate-400'} ${sel?.r===r&&sel?.c===c?'bg-yellow-500':''}`}>{p}</div>))}</div></div>;
+};
+
+const ClickerGame = ({ onGameOver }) => {
+    const [c,setC]=useState(0); const [t,setT]=useState(10); const [a,setA]=useState(false);
+    useEffect(()=>{if(a&&t>0) {const i=setTimeout(()=>setT(t-1),1000); return ()=>clearTimeout(i);} else if(a&&t===0) {setA(false); onGameOver(c,`Velocidad: ${c} clicks`);}},[a,t]);
+    if(!a) return <button onClick={()=>{setC(0);setT(10);setA(true)}} className="neon-btn px-8 py-4 text-2xl font-black">START BLITZ</button>;
+    return <div className="text-center"><div className="text-6xl font-black text-white mb-4">{t}s</div><button onClick={()=>{setC(c+1);playSound('hit')}} className="w-40 h-40 rounded-full bg-red-600 border-4 border-red-400 active:scale-95 shadow-[0_0_30px_#ef4444] text-4xl font-black text-white">{c}</button></div>;
+};
+
+const RpsGame = ({ onGameOver }) => {
+    const [s, setS] = useState({p:0, c:0, r:0}); const [res, setRes] = useState(null);
+    const play = (u) => {
+        if(s.r>=10) return;
+        const c=['🪨','📄','✂️'][Math.floor(Math.random()*3)];
+        let r='Empate'; let ns={...s, r:s.r+1};
+        if((u==='🪨'&&c==='✂️')||(u==='📄'&&c==='🪨')||(u==='✂️'&&c==='📄')) { r='Ganas'; ns.p++; playSound('win'); }
+        else if(u!==c) { r='Pierdes'; ns.c++; playSound('lose'); }
+        setS(ns); setRes({u,c,r});
+        if(ns.r===10) setTimeout(()=>onGameOver(ns.p*10, ns.p>ns.c?'¡CAMPEÓN!':'PERDEDOR', ns.p>ns.c?'green':'red'), 1500);
+    };
+    if(s.r===10) return <div className="text-2xl font-bold animate-pulse">¡FIN DEL TORNEO!</div>;
+    return <div className="text-center w-full"><div className="flex justify-between font-bold text-xl mb-4 px-4"><span className="text-green-400">YO: {s.p}</span><span>Ronda {s.r}/10</span><span className="text-red-400">CPU: {s.c}</span></div>{res && <div className="mb-4 text-xl font-bold">{res.u} vs {res.c} : {res.r}</div>}<div className="flex gap-2 justify-center">{['🪨','📄','✂️'].map(x=><button key={x} onClick={()=>play(x)} className="text-5xl p-4 bg-slate-800 rounded hover:scale-110 transition">{x}</button>)}</div></div>;
+};
+
+const MemoryGame = ({ onGameOver }) => {
+    const icons=['🚀','👽','👾','🤖','🎃','🔥','💎','🎮']; 
+    const [c,setC]=useState([]); const [f,setF]=useState([]); const [m,setM]=useState([]); const [mv,setMv]=useState(0);
+    useEffect(()=>{ setC([...icons,...icons].sort(()=>Math.random()-.5)); },[]);
+    const clk=(i)=>{
+        if(f.length<2 && !f.includes(i) && !m.includes(i)){
+            const nf=[...f,i]; setF(nf); playSound('click');
+            if(nf.length===2){
+                setMv(x=>x+1);
+                if(c[nf[0]]===c[nf[1]]){ setM([...m,...nf]); setF([]); playSound('win'); if(m.length+2===c.length) setTimeout(()=>onGameOver(100-mv*2,'¡Memoria Perfecta!'),500); }
+                else setTimeout(()=>setF([]),1000);
+            }
+        }
+    };
+    return <div className="grid grid-cols-4 gap-2">{c.map((x,i)=><button key={i} onClick={()=>clk(i)} className={`w-14 h-14 text-3xl rounded transition-all duration-300 ${f.includes(i)||m.includes(i)?'bg-white rotate-y-180':'bg-indigo-900 border border-indigo-500'}`}>{f.includes(i)||m.includes(i)?x:''}</button>)}</div>;
+};
+
+const FlappyRocket = ({ onGameOver }) => {
+    const cv = useRef(null); const [act, setAct] = useState(false); const [sc, setSc] = useState(0);
+    const st = useRef({ y:150, v:0, p:[], f:0 });
+    const loop = () => {
+        if(!act || !cv.current) return;
+        const s = st.current; const ctx = cv.current.getContext('2d'); s.f++;
+        s.v += 0.15; s.y += s.v;
+        if(s.f%100===0) s.p.push({x:300, h:50+Math.random()*150});
+        s.p.forEach(p=>p.x-=2); s.p=s.p.filter(p=>p.x>-30);
+        s.p.forEach(p=>{ if(p.x<50 && p.x>10 && (s.y<p.h || s.y>p.h+100)) { setAct(false); onGameOver(sc,'Choque'); } if(p.x===10) setSc(c=>c+1); });
+        if(s.y>300||s.y<0) { setAct(false); onGameOver(sc,'Caída'); }
+        ctx.fillStyle='#000'; ctx.fillRect(0,0,300,300); ctx.fillStyle='#0f0'; s.p.forEach(p=>{ ctx.fillRect(p.x,0,30,p.h); ctx.fillRect(p.x,p.h+100,30,300); }); ctx.fillStyle='#f00'; ctx.beginPath(); ctx.arc(40,s.y,10,0,Math.PI*2); ctx.fill();
+        requestAnimationFrame(loop);
+    };
+    useEffect(()=>{if(act)loop()},[act]);
+    const jump = (e) => { e.preventDefault(); st.current.v = -3.5; playSound('click'); };
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current={y:150,v:0,p:[],f:0}}} className="neon-btn px-8 py-4 text-xl font-black">VOLAR 🚀</button>;
+    return <canvas ref={cv} width={300} height={300} className="bg-black border-2 border-green-500 touch-none" onMouseDown={jump} onTouchStart={jump}/>;
+};
+
+const BrickBreaker = ({ onGameOver }) => {
+    const cv = useRef(null); const [act, setAct] = useState(false); const [sc, setSc] = useState(0);
+    const st = useRef({ x:100, bx:150, by:200, vx:3, vy:-3, b:[] });
+    useEffect(()=>{ const br = []; for(let r=0;r<4;r++) for(let c=0;c<8;c++) br.push({x:c*35+10, y:r*20+30, s:1}); st.current.b = br; },[]);
+    const loop = () => {
+        if(!act||!cv.current)return; const s = st.current; const ctx = cv.current.getContext('2d');
+        s.bx+=s.vx; s.by+=s.vy; if(s.bx<=0||s.bx>=300) s.vx*=-1; if(s.by<=0) s.vy*=-1;
+        if(s.by>=300) { setAct(false); onGameOver(sc,'Game Over'); }
+        if(s.by>=280 && s.bx>=s.x && s.bx<=s.x+60) s.vy*=-1.1;
+        s.b.forEach(b=>{ if(b.s && s.bx>b.x && s.bx<b.x+30 && s.by>b.y && s.by<b.y+15) { b.s=0; s.vy*=-1; setSc(c=>c+10); playSound('hit'); } });
+        ctx.fillStyle='#111'; ctx.fillRect(0,0,300,300); ctx.fillStyle='#3b82f6'; ctx.fillRect(s.x,285,60,10); ctx.beginPath(); ctx.arc(s.bx,s.by,5,0,Math.PI*2); ctx.fill();
+        s.b.forEach(b=>{ if(b.s) { ctx.fillStyle=`hsl(${b.y},70%,50%)`; ctx.fillRect(b.x,b.y,30,15); } });
+        requestAnimationFrame(loop);
+    };
+    useEffect(()=>{if(act)loop()},[act]);
+    const mv = (e) => { if(cv.current) st.current.x = Math.max(0, Math.min(240, (e.clientX||e.touches[0].clientX) - cv.current.getBoundingClientRect().left - 30)); };
+    if(!act) return <button onClick={()=>{setSc(0);setAct(true);st.current.bx=150;st.current.by=200;st.current.vy=-3;}} className="neon-btn px-8 py-4 font-bold">ROMPER LADRILLOS</button>;
+    return <canvas ref={cv} width={300} height={300} className="bg-black border-2 border-blue-500 touch-none" onMouseMove={mv} onTouchMove={mv}/>;
+};
+
+// --- APP PRINCIPAL ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState('intro'); 
+  const [activeGame, setActiveGame] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [gameOverData, setGameOverData] = useState(null);
+  const [userStats, setUserStats] = useState({ totalPoints: 0, gamesPlayed: 0 });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [bgm, setBgm] = useState(false);
+
+  // LISTA DE 15 JUEGOS
+  const allGames = [
+    { id: 1, title: 'NEON BLOCKS', cat: 'Puzzle', comp: TetrisGame, icon: <LayoutGrid className="text-cyan-400"/> },
+    { id: 2, title: 'SPACE WAR', cat: 'Acción', comp: SpaceWar, icon: <Rocket className="text-red-500"/> },
+    { id: 3, title: 'NEON PONG', cat: 'Arcade', comp: PongGame, icon: <Move className="text-blue-400"/> },
+    { id: 4, title: 'TRIVIA AI', cat: 'Mental', comp: GeminiTrivia, icon: <Sparkles className="text-purple-400"/> },
+    { id: 5, title: 'TIC TAC TOE', cat: 'Lógica', comp: TicTacToe, icon: <XIcon className="text-green-400"/> }, 
+    { id: 6, title: 'MINESWEEPER', cat: 'Clásico', comp: Minesweeper, icon: <Bomb className="text-yellow-500"/> },
+    { id: 7, title: 'ZOMBIE ARENA', cat: 'Shooter', comp: ZombieArena, icon: <Crosshair className="text-red-500"/> },
+    { id: 8, title: 'SNAKE PRO', cat: 'Clásico', comp: SnakeGame, icon: <Ghost className="text-emerald-400"/> },
+    { id: 9, title: 'MEMORY', cat: 'Memoria', comp: MemoryGame, icon: <Brain className="text-indigo-400"/> },
+    { id: 10, title: 'CHESS', cat: 'Estrategia', comp: ChessGame, icon: <Shield className="text-slate-300"/> },
+    { id: 11, title: 'RPS BATTLE', cat: 'Suerte', comp: RpsGame, icon: <Scissors className="text-orange-400"/> },
+    { id: 12, title: 'CLICKER', cat: 'Click', comp: ClickerGame, icon: <Zap className="text-yellow-200"/> },
+    { id: 13, title: '2048', cat: 'Puzzle', comp: Game2048, icon: <Grid className="text-orange-300"/> },
+    { id: 14, title: 'FLAPPY', cat: 'Habilidad', comp: FlappyRocket, icon: <Rocket className="text-rose-400"/> },
+    { id: 15, title: 'BRICK', cat: 'Retro', comp: BrickBreaker, icon: <Box className="text-cyan-400"/> },
+  ];
+  const filteredGames = allGames.filter(g => g.title.toLowerCase().includes(searchTerm.toLowerCase()));
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+        if (u) {
+            const snap = await getDoc(doc(db, 'artifacts', appId, 'users', u.uid, 'profile', 'stats'));
+            if (snap.exists() && snap.data().email) {
+                setUser({ ...u, email: snap.data().email });
+                if(['intro','login','register'].includes(view)) setView('home');
+                fetchStats(u.uid);
+            } else { if(view==='home') setView('login'); }
+        }
+    });
+    return () => unsub();
+  }, [view]);
+
+  const fetchStats = (uid) => {
+      onSnapshot(doc(db,'artifacts',appId,'users',uid,'profile','stats'), s=>{
+          if(s.exists()) setUserStats(s.data());
+      });
+  };
+
+  const handleAuth = async (isLogin) => {
+      setLoading(true); setError('');
+      try {
+          if(!auth.currentUser) await signInAnonymously(auth);
+          const uid = auth.currentUser.uid;
+          await setDoc(doc(db, 'artifacts', appId, 'users', uid, 'profile', 'stats'), {
+              totalPoints: 0, gamesPlayed: 0, email: email 
+          }, { merge: true });
+          setUser({ ...auth.currentUser, email });
+          setView('home');
+          fetchStats(uid);
+      } catch(e) { setError("Error de conexión. Intenta de nuevo."); }
+      setLoading(false);
+  };
+
+  const askGuide = async () => {
+      if(!activeGame) return;
+      const res = await callGemini(`Dime un truco PRO para ganar en "${activeGame.title}" en 1 frase corta.`);
+      alert(`🤖 CONSEJO DE IA:\n${res}`);
+  };
+
+  const analyzeProfile = async () => {
+      const res = await callGemini(`Analiza: Jugador con ${userStats.totalPoints} pts y ${userStats.gamesPlayed} juegos. Dame un título gamer épico.`);
+      alert(`📊 ANÁLISIS DE PERFIL:\n${res}`);
+  };
+
+  const saveGame = async (pts, res) => {
+      setGameOverData({score:pts, msg:res});
+      if(user) try { await updateDoc(doc(db,'artifacts',appId,'users',user.uid,'profile','stats'), { totalPoints: (userStats.totalPoints||0)+pts, gamesPlayed: (userStats.gamesPlayed||0)+1 }); } catch(e){}
+  };
+
+  if (view === 'intro') return <div className="min-h-screen bg-black text-white font-sans"><style>{neonStyles}</style><IntroScreen onComplete={()=>setView('login')}/></div>;
+
+  if (view === 'login' || view === 'register') return (
+      <div className="min-h-screen bg-black flex items-center justify-center font-sans text-white relative">
+          <style>{neonStyles}</style>
+          <div className="absolute inset-0 bg-blue-900/20 z-0 animate-pulse"/>
+          <div className="relative z-10 w-full max-w-sm p-8 bg-slate-900/90 border border-slate-700 rounded-2xl shadow-2xl">
+              <div className="flex justify-center gap-3 mb-6 items-center">
+                  <h1 className="text-3xl font-black italic">SAPS GAME</h1>
+                  <div className="px-3 py-1 border border-blue-500 text-blue-400 text-xs font-bold rounded uppercase">{view === 'login' ? 'LOGIN' : 'REGISTRO'}</div>
+              </div>
+              <input className="w-full p-3 bg-black border border-slate-600 rounded mb-3 text-white" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)}/>
+              <input className="w-full p-3 bg-black border border-slate-600 rounded mb-4 text-white" type="password" placeholder="Contraseña" value={password} onChange={e=>setPassword(e.target.value)}/>
+              {error && <p className="text-red-500 text-xs text-center mb-4">{error}</p>}
+              <button onClick={()=>handleAuth(view==='login')} className="w-full py-3 bg-blue-600 hover:bg-blue-500 font-bold rounded mb-2 shadow-lg">{loading?'...':(view==='login'?'ENTRAR':'REGISTRARSE')}</button>
+              <button onClick={()=>setView(view==='login'?'register':'login')} className="w-full text-xs text-slate-400 text-center">Cambiar modo</button>
+          </div>
+      </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#050505] text-white font-sans flex flex-col">
+        <style>{neonStyles}</style>
+        <nav className="h-16 border-b border-slate-800 flex items-center justify-between px-4 bg-black/50 backdrop-blur sticky top-0 z-40">
+            <div className="flex items-center gap-2 cursor-pointer" onClick={()=>setView('home')}><Rocket className="text-blue-500"/><span className="font-black text-xl tracking-tighter">SAPS GAME</span></div>
+            <div className="flex items-center gap-4"><button onClick={()=>{bgm?stopMusic():startMusic();setBgm(!bgm)}} className="text-blue-400">{bgm?<Volume2/>:<VolumeX/>}</button><div className="hidden md:block text-right"><div className="text-[10px] text-slate-500 font-bold">PUNTOS</div><div className="font-mono text-blue-400 font-bold">{userStats.totalPoints}</div></div><button onClick={()=>setView('profile')}><User/></button></div>
+        </nav>
+
+        <main className="flex-grow p-4 md:p-6 max-w-6xl mx-auto w-full">
+            {view === 'profile' && (
+                <div className="animate-fade-in space-y-6">
+                    <button onClick={()=>setView('home')} className="flex items-center gap-2 font-bold text-slate-400"><ArrowLeft/> VOLVER</button>
+                    <div className="p-6 bg-slate-900 rounded-2xl border border-slate-700 flex flex-col md:flex-row justify-between items-center gap-4">
+                        <div><h2 className="text-2xl font-black">{user?.email?.split('@')[0]}</h2><p className="text-slate-400 text-sm">ID: {user?.uid.slice(0,5)}...</p></div>
+                        <div className="flex gap-6 text-center"><div><div className="text-3xl font-black text-blue-500">{userStats.totalPoints}</div><div className="text-xs uppercase font-bold">Puntos</div></div></div>
+                    </div>
+                    <button onClick={analyzeProfile} className="w-full py-4 gemini-btn rounded-xl font-bold flex items-center justify-center gap-2"><Sparkles/> ANALIZAR PERFIL CON IA</button>
+                    <button onClick={()=>signOut(auth)} className="w-full py-3 bg-red-900/20 text-red-500 border border-red-900/50 rounded-xl">CERRAR SESIÓN</button>
+                </div>
+            )}
+
+            {view === 'game' && activeGame ? (
+                <div className="h-full flex flex-col items-center animate-fade-in">
+                    <div className="w-full flex justify-between items-center mb-4">
+                        <button onClick={()=>{setActiveGame(null);setGameOverData(null);setView('home')}} className="text-slate-400 font-bold flex items-center gap-2"><ArrowLeft/> SALIR</button>
+                        <button onClick={askGuide} className="px-4 py-1 bg-purple-600/20 border border-purple-500 text-purple-300 rounded-full text-xs font-bold flex items-center gap-2 hover:bg-purple-600/40 transition"><Sparkles size={12}/> ¿CÓMO GANAR?</button>
+                    </div>
+                    <div className="relative border border-slate-700 bg-slate-900/50 p-4 rounded-2xl shadow-2xl min-h-[400px] w-full max-w-2xl flex items-center justify-center overflow-hidden">
+                        {!gameOverData ? <activeGame.comp onGameOver={saveGame} onGuide={askGuide}/> : <GameOverScreen score={gameOverData.score} msg={gameOverData.msg} onRestart={()=>setGameOverData(null)} onExit={()=>{setActiveGame(null);setGameOverData(null);setView('home')}} />}
+                    </div>
+                </div>
+            ) : view === 'home' && (
+                <div className="space-y-8 animate-fade-in">
+                    <div className="relative bg-slate-900 rounded-3xl p-8 border border-slate-800 overflow-hidden shadow-lg">
+                        <div className="relative z-10"><h2 className="text-4xl font-black italic mb-2">ARENA <span className="text-blue-500">SAPS</span></h2><input type="text" placeholder="BUSCAR JUEGO..." className="w-full max-w-md bg-black/50 border border-slate-700 rounded-full py-3 px-6 text-white outline-none focus:border-blue-500" value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}/></div>
+                        <Rocket className="absolute -right-6 -bottom-6 text-white opacity-5 w-48 h-48 rotate-[-12deg]"/>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                        {filteredGames.map(g=>(
+                            <div key={g.id} onClick={()=>{setActiveGame(g);setView('game')}} className={`bg-slate-900 border ${g.color?.split(' ')[0]||'border-slate-800'} p-6 rounded-xl flex flex-col items-center justify-center gap-4 hover:scale-105 transition cursor-pointer shadow-lg hover:shadow-blue-900/20`}>
+                                <div className="p-3 bg-black/40 rounded-full">{g.icon}</div>
+                                <div className="text-center"><h3 className="font-black italic">{g.title}</h3><p className="text-[10px] text-slate-500 font-bold uppercase">{g.cat}</p></div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </main>
+    </div>
+  );
+}
+
